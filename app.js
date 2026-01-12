@@ -1,14 +1,7 @@
 /* =========================
-   English Word Program v3
-   - 出題方向:
-     1) ja-en-card     日→英（カード）
-     2) en-ja-card     英→日（カード）
-     3) ja-en-typing   日→英（タイピング）
-   - mastered: モード別で「3回連続正解」
-   - 達成率: 各モードごとに学年/レベル/品詞別のmastered率
-   - チラ見え防止: render前/遷移前に snapToFront()
-   - 音声: 英語のみ（日本語は読まない）
-   - ヒント: 表示しない
+   English Word Program v3.1
+   - 起動時にスプレッドシートを裏で自動読み込み（UI非表示）
+   - 失敗時は localStorage の前回データで起動
    ========================= */
 
 const STORAGE_KEY  = "ewp_cards_v3";
@@ -16,6 +9,9 @@ const PROGRESS_KEY = "ewp_progress_v3";
 const SETTINGS_KEY = "ewp_settings_v3";
 
 const MASTER_STREAK = 3;
+
+/** ★先生用：ここにスプレッドシートURLを固定してください（生徒には見せない想定） */
+const AUTO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1mIugH6yKzxqxoT5QCFC6IkdHHSOG_ixpmp9H5DrfNFo/edit?gid=0#gid=0";
 
 const MODES = {
   JA_EN_CARD: "ja-en-card",
@@ -40,7 +36,7 @@ const SAMPLE_DATA = [
 const $ = (id) => document.getElementById(id);
 
 let allCards  = loadCardsFromStorage() ?? SAMPLE_DATA.slice();
-let progress  = loadProgress();   // { [cardKey]: { modes: { [mode]: {good,bad,streak,mastered} } } }
+let progress  = loadProgress();
 let settings  = loadSettings();
 
 let filtered = [];
@@ -82,15 +78,6 @@ const els = {
   speakBtn: $("speakBtn"),
   stopSpeakBtn: $("stopSpeakBtn"),
 
-  sheetUrl: $("sheetUrl"),
-  loadFromUrl: $("loadFromUrl"),
-
-  csvInput: $("csvInput"),
-  importCsv: $("importCsv"),
-  useSample: $("useSample"),
-  importMsg: $("importMsg"),
-
-  // mastery outputs
   mOverallJaEnCard: $("mOverallJaEnCard"),
   mGradeJaEnCard: $("mGradeJaEnCard"),
   mLevelJaEnCard: $("mLevelJaEnCard"),
@@ -118,12 +105,13 @@ function init() {
   els.mode.value     = settings.mode ?? "all";
   els.autoSpeak.checked = !!settings.autoSpeak;
 
-  if (settings.lastSheetUrl) els.sheetUrl.value = settings.lastSheetUrl;
-
   syncTypingUI();
   applyFilters(true);
   render(true);
   renderMasteryAllModes();
+
+  // ★起動時に裏で自動読み込み（UIなし・失敗してもアプリは動く）
+  autoLoadFromSheet();
 
   els.filterGrade.addEventListener("change", () => { applyFilters(true); render(true); });
   els.filterLevel.addEventListener("change", () => { applyFilters(true); render(true); });
@@ -178,53 +166,18 @@ function init() {
   });
 
   els.skipBtn.addEventListener("click", () => nextCard(true));
-  els.markGood.addEventListener("click", () => {
-    snapToFront();
-    markResult("good");
-  });
-  els.markBad.addEventListener("click", () => {
-    snapToFront();
-    markResult("bad");
-  });
+  els.markGood.addEventListener("click", () => { snapToFront(); markResult("good"); });
+  els.markBad.addEventListener("click", () => { snapToFront(); markResult("bad"); });
 
+  // 進捗リセット：確認ダイアログ
   els.resetProgress.addEventListener("click", () => {
-  const ok = window.confirm("本当に進捗をリセットしていいですか？（元に戻せません）");
-  if (!ok) return;
-  resetProgress();
-});
-
+    const ok = window.confirm("本当に進捗をリセットしていいですか？（元に戻せません）");
+    if (!ok) return;
+    resetProgress();
+  });
 
   els.speakBtn.addEventListener("click", speakCurrentEnglishOnly);
   els.stopSpeakBtn.addEventListener("click", stopSpeak);
-
-  els.loadFromUrl.addEventListener("click", async () => {
-    const link = (els.sheetUrl.value || "").trim();
-    if (!link) return showImportMsg("URLが空です。");
-
-    try {
-      settings.lastSheetUrl = link;
-      saveSettings(settings);
-
-      showImportMsg("読み込み中...");
-      await loadCardsFromSheetUrl(link);
-      showImportMsg(`URL読み込み完了：${allCards.length}件`);
-    } catch (e) {
-      console.error(e);
-      showImportMsg("URL読み込みに失敗（公開設定 or gid を確認）");
-    }
-  });
-
-  els.importCsv.addEventListener("click", importFromCsvTextarea);
-  els.useSample.addEventListener("click", () => {
-    snapToFront();
-    allCards = SAMPLE_DATA.slice();
-    saveCardsToStorage(allCards);
-    buildFilterOptions();
-    applyFilters(true);
-    render(true);
-    renderMasteryAllModes();
-    showImportMsg("サンプルに戻しました。");
-  });
 
   els.typingCheckBtn.addEventListener("click", checkTyping);
   els.typingRevealBtn.addEventListener("click", revealTypingAnswer);
@@ -241,6 +194,39 @@ function init() {
     els.stopSpeakBtn.disabled = true;
     els.autoSpeak.disabled = true;
   }
+}
+
+/* -------------------- auto load -------------------- */
+async function autoLoadFromSheet() {
+  try {
+    const cards = await fetchCardsFromSheetUrl(AUTO_SHEET_URL);
+    if (cards.length) {
+      allCards = cards;
+      saveCardsToStorage(allCards);
+      buildFilterOptions();
+      // フィルタは「すべて」に戻してOK（授業運用で安定）
+      els.filterGrade.value = "すべて";
+      els.filterLevel.value = "すべて";
+      els.filterPos.value = "すべて";
+      applyFilters(true);
+      render(true);
+      renderMasteryAllModes();
+    }
+  } catch (e) {
+    // 失敗時は無言で継続（前回保存データで動く）
+    console.warn("autoLoadFromSheet failed:", e);
+  }
+}
+
+async function fetchCardsFromSheetUrl(sheetLink) {
+  const csvUrl = buildCsvUrlFromSheetLink(sheetLink);
+  const bust = (csvUrl.includes("?") ? "&" : "?") + "ts=" + Date.now();
+  const res = await fetch(csvUrl + bust, { method: "GET" });
+  if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
+  const csvText = await res.text();
+  const cards = parseCsvToCards(csvText);
+  if (!cards.length) throw new Error("No rows");
+  return cards;
 }
 
 /* -------------------- Chira-mie prevention -------------------- */
@@ -266,8 +252,6 @@ function syncTypingUI(focusInput=false) {
     resetTypingState();
   }
 
-  // 自動読み上げは「英語が表に出る」時だけ有効
-  // ja-en-card は表が日本語、en-ja-card は表が英語、ja-en-typing も表が日本語
   const canAutoSpeak = (currentMode() === MODES.EN_JA_CARD);
   if (!canAutoSpeak) {
     els.autoSpeak.checked = false;
@@ -285,20 +269,15 @@ function resetTypingState() {
 /* -------------------- card text by mode -------------------- */
 function frontBackFor(card) {
   const m = currentMode();
-
-  // ja-en-card   : front=meaning(JA), back=word(EN)
-  // en-ja-card   : front=word(EN), back=meaning(JA)
-  // ja-en-typing : front=meaning(JA), back=word(EN)  （答え=英語）
   if (m === MODES.EN_JA_CARD) {
     return { front: card.word, back: card.meaning, frontIsEnglish: true, backIsEnglish: false };
   }
-  // JA_EN_CARD / JA_EN_TYPING
   return { front: card.meaning, back: card.word, frontIsEnglish: false, backIsEnglish: true };
 }
 
 /* -------------------- rendering -------------------- */
 function render(maybeAutoSpeak) {
-  snapToFront(); // ★内容差し替え前に必ず
+  snapToFront();
 
   if (filtered.length === 0) {
     els.frontText.textContent = "該当なし";
@@ -411,12 +390,8 @@ function pickWeakestIndex(current){
 
 /* -------------------- reveal / flip -------------------- */
 function toggleFlip() { els.card.classList.toggle("flipped"); }
-
 function revealAnswer() {
-  if (isTypingMode()) {
-    revealTypingAnswer();
-    return;
-  }
+  if (isTypingMode()) { revealTypingAnswer(); return; }
   toggleFlip();
 }
 
@@ -443,7 +418,7 @@ function checkTyping() {
     els.typingMsg.innerHTML = `<span class="ok">正解！</span>（Enterで次へ）`;
     els.typingInput.dataset.state = "correctShown";
     markResult("good", { stayOnCard: true });
-    els.card.classList.add("flipped"); // このカードの答え（英語）を表示
+    els.card.classList.add("flipped");
   } else {
     els.typingMsg.innerHTML = `<span class="ng">違います。</span>`;
     els.typingInput.dataset.state = "";
@@ -698,31 +673,7 @@ function stopSpeak() {
   try { window.speechSynthesis.cancel(); } catch {}
 }
 
-/* -------------------- URL -> CSV fetch -------------------- */
-async function loadCardsFromSheetUrl(sheetLink) {
-  const csvUrl = buildCsvUrlFromSheetLink(sheetLink);
-  const bust = (csvUrl.includes("?") ? "&" : "?") + "ts=" + Date.now();
-  const res = await fetch(csvUrl + bust, { method: "GET" });
-  if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
-
-  const csvText = await res.text();
-  const cards = parseCsvToCards(csvText);
-  if (!cards.length) throw new Error("No rows");
-
-  snapToFront();
-  allCards = cards;
-  saveCardsToStorage(allCards);
-
-  buildFilterOptions();
-  els.filterGrade.value = "すべて";
-  els.filterLevel.value = "すべて";
-  els.filterPos.value = "すべて";
-
-  applyFilters(true);
-  render(true);
-  renderMasteryAllModes();
-}
-
+/* -------------------- Sheet URL -> CSV URL -------------------- */
 function buildCsvUrlFromSheetLink(sheetLink) {
   const m = sheetLink.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
   if (!m) throw new Error("Sheet ID not found");
@@ -732,34 +683,7 @@ function buildCsvUrlFromSheetLink(sheetLink) {
   return `https://docs.google.com/spreadsheets/d/${id}/export?format=csv&gid=${gid}`;
 }
 
-/* -------------------- CSV import -------------------- */
-function importFromCsvTextarea() {
-  const txt = (els.csvInput.value || "").trim();
-  if (!txt) return showImportMsg("CSVが空です。");
-
-  try {
-    const cards = parseCsvToCards(txt);
-    if (!cards.length) return showImportMsg("取り込みできる行がありませんでした。");
-
-    snapToFront();
-    allCards = cards;
-    saveCardsToStorage(allCards);
-
-    buildFilterOptions();
-    els.filterGrade.value = "すべて";
-    els.filterLevel.value = "すべて";
-    els.filterPos.value = "すべて";
-
-    applyFilters(true);
-    render(true);
-    renderMasteryAllModes();
-    showImportMsg(`CSV取り込み完了：${cards.length}件`);
-  } catch (e) {
-    console.error(e);
-    showImportMsg("CSVの解析に失敗しました（形式を確認）");
-  }
-}
-
+/* -------------------- CSV parse -------------------- */
 function parseCsvToCards(csvText) {
   const rows = splitCsvRows(csvText);
   const out = [];
@@ -867,22 +791,16 @@ function loadSettings() {
       quizMode: MODES.JA_EN_CARD,
       strategy: "weak",
       mode: "all",
-      autoSpeak: false,
-      lastSheetUrl: ""
+      autoSpeak: false
     };
   } catch {
     return {
       quizMode: MODES.JA_EN_CARD,
       strategy: "weak",
       mode: "all",
-      autoSpeak: false,
-      lastSheetUrl: ""
+      autoSpeak: false
     };
   }
-}
-function showImportMsg(msg) {
-  els.importMsg.textContent = msg;
-  setTimeout(() => { els.importMsg.textContent = ""; }, 5000);
 }
 
 /* -------------------- utils -------------------- */
