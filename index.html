@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>English Word Program</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="wrap header">
+    <h1>English Word Program</h1>
+  </header>
+
+  <main class="wrap">
+    <section class="panel">
+      <div class="row">
+        <label class="field">
+          <span>出題方向</span>
+          <select id="quizMode">
+            <option value="ja-en-card">日→英（カード）</option>
+            <option value="en-ja-card">英→日（カード）</option>
+            <option value="ja-en-typing">日→英（タイピング）</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>出題戦略</span>
+          <select id="strategy">
+            <option value="weak">苦手優先</option>
+            <option value="shuffle">ランダム</option>
+            <option value="seq">順番</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>モード</span>
+          <select id="mode">
+            <option value="all">全カード</option>
+            <option value="wrongOnly">不正解だけ復習</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>学年</span>
+          <select id="filterGrade"></select>
+        </label>
+
+        <label class="field">
+          <span>レベル</span>
+          <select id="filterLevel"></select>
+        </label>
+
+        <label class="field">
+          <span>品詞</span>
+          <select id="filterPos"></select>
+        </label>
+
+        <label class="field toggle">
+          <span>自動読み上げ（英語のみ）</span>
+          <input type="checkbox" id="autoSpeak" />
+        </label>
+      </div>
+
+      <div class="row row2">
+        <button class="btn" id="resetProgress">進捗リセット</button>
+        <div class="stats" id="stats"></div>
+      </div>
+    </section>
+
+    <!-- タイピング用パネル（ja-en-typing のときだけ表示） -->
+    <section class="panel typingPanel" id="typingPanel" aria-live="polite">
+      <div class="row">
+        <input id="typingInput" class="input" placeholder="英単語を入力してEnter" autocomplete="off" autocapitalize="off" spellcheck="false" />
+        <button class="btn" id="typingCheckBtn">チェック</button>
+        <button class="btn" id="typingRevealBtn">答え表示</button>
+      </div>
+      <div class="typingMsg" id="typingMsg"></div>
+    </section>
+
+    <section class="cardArea">
+      <button class="navBtn" id="prevBtn" aria-label="前へ">◀</button>
+
+      <div class="card" id="card" role="button" tabindex="0" aria-label="カードを裏返す">
+        <div class="cardInner" id="cardInner">
+          <div class="cardFace cardFront">
+            <div class="meta" id="metaTop"></div>
+            <div class="big" id="frontText"></div>
+            <div class="hint" id="frontHint">クリックで答え</div>
+          </div>
+          <div class="cardFace cardBack">
+            <div class="meta" id="metaBottom"></div>
+            <div class="big" id="backText"></div>
+            <div class="hint" id="backHint">クリックで戻す</div>
+          </div>
+        </div>
+      </div>
+
+      <button class="navBtn" id="nextBtn" aria-label="次へ">▶</button>
+    </section>
+
+    <section class="actions">
+      <button class="btn good" id="markGood">正解</button>
+      <button class="btn bad" id="markBad">不正解</button>
+      <button class="btn" id="revealBtn">答えを見る</button>
+      <button class="btn" id="skipBtn">スキップ</button>
+      <button class="btn" id="speakBtn">読み上げ（英語のみ）</button>
+      <button class="btn" id="stopSpeakBtn">停止</button>
+    </section>
+
+    <!-- mastered 達成率 -->
+    <section class="panel">
+      <details open>
+        <summary>Mastered（3回連続正解）達成率</summary>
+        <div class="help">出題方向ごとに「mastered」扱いは別管理です。</div>
+
+        <div class="masterGrid">
+          <div class="masterBox">
+            <div class="masterTitle">日→英（カード）</div>
+            <div class="masterOverall" id="mOverallJaEnCard"></div>
+            <div class="masterCols">
+              <div><div class="masterSub">学年</div><div class="masterList" id="mGradeJaEnCard"></div></div>
+              <div><div class="masterSub">レベル</div><div class="masterList" id="mLevelJaEnCard"></div></div>
+              <div><div class="masterSub">品詞</div><div class="masterList" id="mPosJaEnCard"></div></div>
+            </div>
+          </div>
+
+          <div class="masterBox">
+            <div class="masterTitle">英→日（カード）</div>
+            <div class="masterOverall" id="mOverallEnJaCard"></div>
+            <div class="masterCols">
+              <div><div class="masterSub">学年</div><div class="masterList" id="mGradeEnJaCard"></div></div>
+              <div><div class="masterSub">レベル</div><div class="masterList" id="mLevelEnJaCard"></div></div>
+              <div><div class="masterSub">品詞</div><div class="masterList" id="mPosEnJaCard"></div></div>
+            </div>
+          </div>
+
+          <div class="masterBox">
+            <div class="masterTitle">日→英（タイピング）</div>
+            <div class="masterOverall" id="mOverallJaEnTyping"></div>
+            <div class="masterCols">
+              <div><div class="masterSub">学年</div><div class="masterList" id="mGradeJaEnTyping"></div></div>
+              <div><div class="masterSub">レベル</div><div class="masterList" id="mLevelJaEnTyping"></div></div>
+              <div><div class="masterSub">品詞</div><div class="masterList" id="mPosJaEnTyping"></div></div>
+            </div>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <section class="panel">
+      <details open>
+        <summary>データ取り込み（URL / CSVコピペ）</summary>
+
+        <p class="help">スプレッドシートのURLを貼って読み込み（公開シート向け）</p>
+
+        <div class="row">
+          <input id="sheetUrl" class="input" placeholder="GoogleスプレッドシートのURL（/edit?gid=...）を貼る" />
+          <button class="btn" id="loadFromUrl">URLから読み込み</button>
+        </div>
+
+        <hr class="sep" />
+
+        <p class="help">CSV貼り付けでも取り込みOK（番号, 単語, 意味, 学年, レベル, 品詞）</p>
+
+        <textarea id="csvInput" placeholder="ここにCSVを貼り付け"></textarea>
+
+        <div class="row">
+          <button class="btn" id="importCsv">CSV取り込み</button>
+          <button class="btn" id="useSample">サンプルに戻す</button>
+          <div class="small" id="importMsg"></div>
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <footer class="wrap footer">
+    <span class="small">保存：ブラウザ(localStorage)</span>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
