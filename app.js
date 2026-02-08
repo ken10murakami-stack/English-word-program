@@ -1,17 +1,21 @@
 /* =========================
-   English Word Program v3.1
-   - 起動時にスプレッドシートを裏で自動読み込み（UI非表示）
-   - 失敗時は localStorage の前回データで起動
+   English Word Program v4
+   - 音声機能：完全削除
+   - データ読み込みUI：非表示（起動時にスプレッドシートから自動更新）
+   - mastered: モード別で「3回連続正解」
+   - mastered除外スイッチ：現在の出題方向で mastered を出題しない
+   - チラ見え防止: render前/遷移前に snapToFront()
    ========================= */
 
-const STORAGE_KEY  = "ewp_cards_v3";
-const PROGRESS_KEY = "ewp_progress_v3";
-const SETTINGS_KEY = "ewp_settings_v3";
+const STORAGE_KEY  = "ewp_cards_v4";
+const PROGRESS_KEY = "ewp_progress_v4";
+const SETTINGS_KEY = "ewp_settings_v4";
 
 const MASTER_STREAK = 3;
 
-/** ★先生用：ここにスプレッドシートURLを固定してください（生徒には見せない想定） */
-const AUTO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1mIugH6yKzxqxoT5QCFC6IkdHHSOG_ixpmp9H5DrfNFo/edit?gid=0#gid=0";
+/** ★先生用：固定のスプレッドシートURL（生徒UIには出ません） */
+const AUTO_SHEET_URL =
+  "https://docs.google.com/spreadsheets/d/1mIugH6yKzxqxoT5QCFC6IkdHHSOG_ixpmp9H5DrfNFo/edit?gid=0#gid=0";
 
 const MODES = {
   JA_EN_CARD: "ja-en-card",
@@ -36,7 +40,7 @@ const SAMPLE_DATA = [
 const $ = (id) => document.getElementById(id);
 
 let allCards  = loadCardsFromStorage() ?? SAMPLE_DATA.slice();
-let progress  = loadProgress();
+let progress  = loadProgress();   // { [cardKey]: { modes: { [mode]: {good,bad,streak,mastered} } } }
 let settings  = loadSettings();
 
 let filtered = [];
@@ -49,7 +53,7 @@ const els = {
   filterGrade: $("filterGrade"),
   filterLevel: $("filterLevel"),
   filterPos: $("filterPos"),
-  autoSpeak: $("autoSpeak"),
+  excludeMastered: $("excludeMastered"),
 
   typingPanel: $("typingPanel"),
   typingInput: $("typingInput"),
@@ -75,9 +79,7 @@ const els = {
   markBad: $("markBad"),
   resetProgress: $("resetProgress"),
 
-  speakBtn: $("speakBtn"),
-  stopSpeakBtn: $("stopSpeakBtn"),
-
+  // mastery outputs
   mOverallJaEnCard: $("mOverallJaEnCard"),
   mGradeJaEnCard: $("mGradeJaEnCard"),
   mLevelJaEnCard: $("mLevelJaEnCard"),
@@ -103,19 +105,26 @@ function init() {
   els.quizMode.value = settings.quizMode ?? MODES.JA_EN_CARD;
   els.strategy.value = settings.strategy ?? "weak";
   els.mode.value     = settings.mode ?? "all";
-  els.autoSpeak.checked = !!settings.autoSpeak;
+  els.excludeMastered.checked = !!settings.excludeMastered;
 
   syncTypingUI();
   applyFilters(true);
-  render(true);
+  render(false);
   renderMasteryAllModes();
 
-  // ★起動時に裏で自動読み込み（UIなし・失敗してもアプリは動く）
+  // ★起動時に裏で自動読み込み（失敗してもlocalStorageで動く）
   autoLoadFromSheet();
 
-  els.filterGrade.addEventListener("change", () => { applyFilters(true); render(true); });
-  els.filterLevel.addEventListener("change", () => { applyFilters(true); render(true); });
-  els.filterPos.addEventListener("change", () => { applyFilters(true); render(true); });
+  els.filterGrade.addEventListener("change", () => { applyFilters(true); render(false); });
+  els.filterLevel.addEventListener("change", () => { applyFilters(true); render(false); });
+  els.filterPos.addEventListener("change", () => { applyFilters(true); render(false); });
+
+  els.excludeMastered.addEventListener("change", () => {
+    settings.excludeMastered = els.excludeMastered.checked;
+    saveSettings(settings);
+    applyFilters(true);
+    render(false);
+  });
 
   els.quizMode.addEventListener("change", () => {
     settings.quizMode = els.quizMode.value;
@@ -123,7 +132,7 @@ function init() {
     snapToFront();
     syncTypingUI(true);
     applyFilters(true);
-    render(true);
+    render(false);
   });
 
   els.strategy.addEventListener("change", () => {
@@ -137,12 +146,7 @@ function init() {
     saveSettings(settings);
     applyFilters(true);
     snapToFront();
-    render(true);
-  });
-
-  els.autoSpeak.addEventListener("change", () => {
-    settings.autoSpeak = els.autoSpeak.checked;
-    saveSettings(settings);
+    render(false);
   });
 
   els.prevBtn.addEventListener("click", prevCard);
@@ -169,15 +173,11 @@ function init() {
   els.markGood.addEventListener("click", () => { snapToFront(); markResult("good"); });
   els.markBad.addEventListener("click", () => { snapToFront(); markResult("bad"); });
 
-  // 進捗リセット：確認ダイアログ
   els.resetProgress.addEventListener("click", () => {
     const ok = window.confirm("本当に進捗をリセットしていいですか？（元に戻せません）");
     if (!ok) return;
     resetProgress();
   });
-
-  els.speakBtn.addEventListener("click", speakCurrentEnglishOnly);
-  els.stopSpeakBtn.addEventListener("click", stopSpeak);
 
   els.typingCheckBtn.addEventListener("click", checkTyping);
   els.typingRevealBtn.addEventListener("click", revealTypingAnswer);
@@ -188,12 +188,6 @@ function init() {
       else checkTyping();
     }
   });
-
-  if (!("speechSynthesis" in window)) {
-    els.speakBtn.disabled = true;
-    els.stopSpeakBtn.disabled = true;
-    els.autoSpeak.disabled = true;
-  }
 }
 
 /* -------------------- auto load -------------------- */
@@ -204,12 +198,14 @@ async function autoLoadFromSheet() {
       allCards = cards;
       saveCardsToStorage(allCards);
       buildFilterOptions();
-      // フィルタは「すべて」に戻してOK（授業運用で安定）
+
+      // フィルタは「すべて」に戻す（授業運用で安定）
       els.filterGrade.value = "すべて";
       els.filterLevel.value = "すべて";
       els.filterPos.value = "すべて";
+
       applyFilters(true);
-      render(true);
+      render(false);
       renderMasteryAllModes();
     }
   } catch (e) {
@@ -233,7 +229,7 @@ async function fetchCardsFromSheetUrl(sheetLink) {
 function snapToFront() {
   els.card.classList.add("noAnim");
   els.card.classList.remove("flipped");
-  void els.card.offsetHeight;
+  void els.card.offsetHeight; // reflow
   els.card.classList.remove("noAnim");
 }
 
@@ -251,13 +247,6 @@ function syncTypingUI(focusInput=false) {
     els.typingPanel.classList.remove("show");
     resetTypingState();
   }
-
-  const canAutoSpeak = (currentMode() === MODES.EN_JA_CARD);
-  if (!canAutoSpeak) {
-    els.autoSpeak.checked = false;
-    settings.autoSpeak = false;
-    saveSettings(settings);
-  }
 }
 
 function resetTypingState() {
@@ -270,20 +259,22 @@ function resetTypingState() {
 function frontBackFor(card) {
   const m = currentMode();
   if (m === MODES.EN_JA_CARD) {
-    return { front: card.word, back: card.meaning, frontIsEnglish: true, backIsEnglish: false };
+    return { front: card.word, back: card.meaning };
   }
-  return { front: card.meaning, back: card.word, frontIsEnglish: false, backIsEnglish: true };
+  // JA_EN_CARD / JA_EN_TYPING
+  return { front: card.meaning, back: card.word };
 }
 
 /* -------------------- rendering -------------------- */
-function render(maybeAutoSpeak) {
+function render() {
   snapToFront();
 
   if (filtered.length === 0) {
     els.frontText.textContent = "該当なし";
-    els.backText.textContent = modeIsWrongOnly()
-      ? "不正解のカードがありません（不正解を付けると出ます）"
-      : "フィルタを変更してください";
+    els.backText.textContent =
+      (els.excludeMastered.checked)
+        ? "mastered除外やフィルタ条件を見直してください"
+        : "フィルタを変更してください";
     els.metaTop.textContent = "";
     els.metaBottom.textContent = "";
     els.stats.textContent = "0件";
@@ -296,7 +287,7 @@ function render(maybeAutoSpeak) {
 
   index = clamp(index, 0, filtered.length - 1);
   const card = filtered[index];
-  const { front, back, frontIsEnglish } = frontBackFor(card);
+  const { front, back } = frontBackFor(card);
 
   els.frontText.textContent = front || "";
   els.backText.textContent = back || "";
@@ -313,8 +304,9 @@ function render(maybeAutoSpeak) {
   const i = index + 1;
   const agg = aggregateProgress(filtered, currentMode());
 
+  const excl = els.excludeMastered.checked ? "ON" : "OFF";
   els.stats.textContent =
-    `${i}/${total}  |  正解:${agg.good} 不正解:${agg.bad}  |  正答率:${agg.rate}%  |  ${MODE_LABEL[currentMode()]}  |  戦略:${labelStrategy(els.strategy.value)}  |  モード:${labelMode(els.mode.value)}`;
+    `${i}/${total}  |  正解:${agg.good} 不正解:${agg.bad}  |  正答率:${agg.rate}%  |  ${MODE_LABEL[currentMode()]}  |  戦略:${labelStrategy(els.strategy.value)}  |  モード:${labelMode(els.mode.value)}  |  mastered除外:${excl}`;
 
   if (isTypingMode()) {
     els.frontHint.textContent = "";
@@ -324,10 +316,6 @@ function render(maybeAutoSpeak) {
   } else {
     els.frontHint.textContent = "クリックで答え";
     els.backHint.textContent = "クリックで戻す";
-  }
-
-  if (maybeAutoSpeak && els.autoSpeak.checked && frontIsEnglish) {
-    speakEnglish(front);
   }
 
   renderMasteryAllModes();
@@ -348,7 +336,6 @@ function labelMode(v){
 /* -------------------- navigation -------------------- */
 function nextCard(forceNoFlip=false) {
   if (forceNoFlip) snapToFront();
-  stopSpeak();
   if (!filtered.length) return;
 
   const strat = els.strategy.value;
@@ -356,15 +343,14 @@ function nextCard(forceNoFlip=false) {
   else if (strat === "shuffle") index = pickDifferentRandomIndex(index, filtered.length);
   else index = pickWeakestIndex(index);
 
-  render(true);
+  render();
 }
 
 function prevCard() {
   snapToFront();
-  stopSpeak();
   if (!filtered.length) return;
   index = (index - 1 + filtered.length) % filtered.length;
-  render(true);
+  render();
 }
 
 function pickDifferentRandomIndex(current, len){
@@ -474,6 +460,7 @@ function applyFilters(resetIndex=false) {
   const l = els.filterLevel.value || "すべて";
   const p = els.filterPos.value || "すべて";
   const wrongOnly = modeIsWrongOnly();
+  const excludeMastered = !!els.excludeMastered.checked;
 
   filtered = allCards.filter(c => {
     const okG = (g === "すべて") || (String(c.grade) === g);
@@ -481,9 +468,12 @@ function applyFilters(resetIndex=false) {
     const okP = (p === "すべて") || (String(c.pos) === p);
     if (!(okG && okL && okP)) return false;
 
-    if (!wrongOnly) return true;
     const pr = getModeProgress(c, currentMode());
-    return (pr.bad || 0) >= 1;
+
+    if (wrongOnly && (pr.bad || 0) < 1) return false;
+    if (excludeMastered && pr.mastered) return false;
+
+    return true;
   });
 
   if (resetIndex) index = 0;
@@ -520,20 +510,24 @@ function markResult(type, opts = {}) {
 
   saveProgress(progress);
 
-  if (modeIsWrongOnly()) {
+  // ★mastered除外がONの場合、いま正解でmasteredになったカードは出題候補から外れるので再フィルタ
+  if (modeIsWrongOnly() || els.excludeMastered.checked) {
     const currentKey = progressKey(card);
     applyFilters(false);
+
     if (!filtered.length) {
       index = 0;
-      render(false);
+      render();
       return;
     }
+
     const newIndex = filtered.findIndex(c => progressKey(c) === currentKey);
+    // 見つからない（除外された）なら、今のindexのまま範囲内に丸める
     index = (newIndex >= 0) ? newIndex : clamp(index, 0, filtered.length - 1);
   }
 
   if (stayOnCard) {
-    render(false);
+    render();
     return;
   }
 
@@ -544,7 +538,7 @@ function resetProgress() {
   progress = {};
   saveProgress(progress);
   applyFilters(true);
-  render(false);
+  render();
   renderMasteryAllModes();
 }
 
@@ -567,9 +561,12 @@ function aggregateProgress(list, mode) {
   return { good, bad, rate };
 }
 
+/* ★進捗キー：英単語ベース（並び替え/ID変更に強い） */
 function progressKey(card) {
-  if (card.id !== undefined && card.id !== null && card.id !== "") return `id:${card.id}`;
-  return `wm:${card.word}__${card.meaning}`;
+  const w = (card.word || "").trim().toLowerCase();
+  const m = (card.meaning || "").trim();
+  if (w) return `w:${w}`;
+  return `wm:${w}__${m}`;
 }
 
 /* -------------------- mastery dashboard -------------------- */
@@ -630,47 +627,6 @@ function renderMasteryList(items) {
   return items.map(it =>
     `<div class="rowLine"><span>${escapeHtml(it.key)}：${it.mastered}/${it.total}</span><span class="pct">${it.pct}%</span></div>`
   ).join("");
-}
-
-/* -------------------- Speech (English only) -------------------- */
-function speakCurrentEnglishOnly() {
-  if (!filtered.length) return;
-  const card = currentCard();
-  const { front, back, frontIsEnglish, backIsEnglish } = frontBackFor(card);
-  const isFlipped = els.card.classList.contains("flipped");
-
-  if (!isFlipped && frontIsEnglish) speakEnglish(front);
-  else if (isFlipped && backIsEnglish) speakEnglish(back);
-}
-
-function speakEnglish(text) {
-  if (!("speechSynthesis" in window)) return;
-  const s = (text || "").trim();
-  if (!s) return;
-
-  stopSpeak();
-  const u = new SpeechSynthesisUtterance(s);
-  u.lang = "en-US";
-
-  const voices = window.speechSynthesis.getVoices?.() || [];
-  const preferred = pickVoice(voices, "en-US");
-  if (preferred) u.voice = preferred;
-
-  window.speechSynthesis.speak(u);
-}
-
-function pickVoice(voices, lang) {
-  const lc = (lang || "").toLowerCase();
-  const short = lc.split("-")[0];
-  let v = voices.find(v => (v.lang || "").toLowerCase() === lc);
-  if (v) return v;
-  v = voices.find(v => (v.lang || "").toLowerCase().startsWith(short));
-  return v || null;
-}
-
-function stopSpeak() {
-  if (!("speechSynthesis" in window)) return;
-  try { window.speechSynthesis.cancel(); } catch {}
 }
 
 /* -------------------- Sheet URL -> CSV URL -------------------- */
@@ -791,14 +747,14 @@ function loadSettings() {
       quizMode: MODES.JA_EN_CARD,
       strategy: "weak",
       mode: "all",
-      autoSpeak: false
+      excludeMastered: false,
     };
   } catch {
     return {
       quizMode: MODES.JA_EN_CARD,
       strategy: "weak",
       mode: "all",
-      autoSpeak: false
+      excludeMastered: false,
     };
   }
 }
